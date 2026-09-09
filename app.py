@@ -1,13 +1,11 @@
 import sqlite3
 import hashlib
 import secrets
-import functools
 import os
 from flask import Flask, request, jsonify, g
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "delivery.db"))
-SCHEMA_PATH = os.path.join(BASE_DIR, "schema.sql")
 
 app = Flask(__name__)
 
@@ -27,28 +25,59 @@ def close_db(exception):
         db.close()
 
 def init_db():
-    if not os.path.exists(DB_PATH):
-        conn = sqlite3.connect(DB_PATH)
-        if os.path.exists(SCHEMA_PATH):
-            with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
-                conn.executescript(f.read())
-        conn.commit()
-        
-        # إنشاء حساب المدير الافتراضي من متغيرات البيئة
-        admin_phone = os.environ.get("ADMIN_PHONE", "05300000000")
-        admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # إنشاء جدول المستخدمين
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            role TEXT NOT NULL,
+            name TEXT NOT NULL
+        )
+    ''')
+    
+    # إنشاء جدول الطلبات
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_name TEXT,
+            phone TEXT,
+            address TEXT,
+            details TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # إنشاء جدول الجلسات
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL
+        )
+    ''')
+    
+    # إضافة حساب المدير إذا لم يكن موجوداً
+    admin_phone = os.environ.get("ADMIN_PHONE", "05300000000")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    
+    cursor.execute("SELECT id FROM users WHERE phone = ?", (admin_phone,))
+    if not cursor.fetchone():
         salt = secrets.token_hex(16)
         hashed = hash_password(admin_password, salt)
-        
-        cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO users (phone, password_hash, salt, role, name) VALUES (?, ?, ?, 'admin', 'System Admin')",
             (admin_phone, hashed, salt)
         )
-        conn.commit()
-        conn.close()
+        
+    conn.commit()
+    conn.close()
 
-# تشغيل تهيئة القاعدة عند بدء التشغيل
 with app.app_context():
     init_db()
 
