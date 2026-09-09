@@ -5,7 +5,7 @@ import os
 from flask import Flask, request, jsonify, g
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "delivery.db"))
+DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "/tmp/alo_urfa_v2.db"))
 
 app = Flask(__name__)
 
@@ -63,8 +63,8 @@ def init_db():
     ''')
     
     # إضافة حساب المدير إذا لم يكن موجوداً
-    admin_phone = os.environ.get("ADMIN_PHONE", "05300000000")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    admin_phone = os.environ.get("ADMIN_PHONE", "‏‪05393405777‬‏")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "746920")
     
     cursor.execute("SELECT id FROM users WHERE phone = ?", (admin_phone,))
     if not cursor.fetchone():
