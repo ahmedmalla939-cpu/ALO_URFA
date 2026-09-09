@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>سريع — نظام إدارة التوصيل</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #12151C; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const API_BASE = "/api";
+
+const STATUS = {
+  NEW: { label: "طلب جديد", color: "#4C9EFF" },
+  ASSIGNED: { label: "تم تعيين السائق", color: "#4C9EFF" },
+  PICKED_UP: { label: "تم الاستلام", color: "#FFB238" },
+  ON_WAY: { label: "في الطريق", color: "#FF7A29" },
+  DELIVERED: { label: "تم التوصيل", color: "#2FBF71" },
+  CANCELLED: { label: "ملغى", color: "#F0455C" },
+};
+
+const NEXT_STATUS = { ASSIGNED: "PICKED_UP", PICKED_UP: "ON_WAY", ON_WAY: "DELIVERED" };
+const NEXT_LABEL = { ASSIGNED: "تأكيد الاستلام", PICKED_UP: "بدء التوصيل", ON_WAY: "تأكيد التسليم" };
+
+const money = (n) => `${Number(n || 0).toLocaleString("ar")} ₺`;
+const timeAgo = (sqlDatetime) => {
+  if (!sqlDatetime) return "";
+  const ts = new Date(sqlDatetime.replace(" ", "T") + "Z").getTime();
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return "الآن";
+  if (s < 3600) return `منذ ${Math.floor(s / 60)} د`;
+  if (s < 86400) return `منذ ${Math.floor(s / 3600)} س`;
+  return new Date(ts).toLocaleDateString("ar");
+};
+
+async function api(path, { method = "GET", token, body } = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (e) {}
+  if (!res.ok) {
+    throw new Error((data && data.error) || `فشل الاتصال بالخادم (${res.status})`);
+  }
+  return data;
+}
+
+function Badge({ status }) {
+  const s = STATUS[status] || STATUS.NEW;
+  return (
+    <span
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 10px",
+        borderRadius: 5, fontSize: 12, fontWeight: 600, color: s.color,
+        background: `${s.color}1A`, border: `1px solid ${s.color}40`, whiteSpace: "nowrap",
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.color }} />
+      {s.label}
+    </span>
+  );
+}
+
+function OrderCard({ order, onAdvance, onCancel, onClaim, compact }) {
+  const s = STATUS[order.status] || STATUS.NEW;
+  return (
+    <div
+      style={{
+        background: "#1A1F29", border: "1px solid #2A3140",
+        borderInlineStart: `3px solid ${s.color}`, borderRadius: 8, padding: 14, marginBottom: 10,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+        <div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: "#8A93A6" }}>
+            {order.order_code}
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#EDEFF3", marginTop: 2 }}>
+            {order.customer_name}
+          </div>
+        </div>
+        <Badge status={order.status} />
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#C4C9D4" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 14 }}>📍</span> {order.address}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 14 }}>📞</span> {order.customer_phone}
+        </div>
+        {!compact && order.items && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 14 }}>📦</span> {order.items}
+          </div>
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "'JetBrains Mono', monospace" }}>
+          <span style={{ fontSize: 14 }}>💵</span> {money(order.amount)}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#8A93A6" }}>
+          <span style={{ fontSize: 14 }}>🕐</span> {timeAgo(order.updated_at)}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        {onClaim && order.status === "NEW" && !order.driver_id && (
+          <button onClick={() => onClaim(order.id)} style={primaryBtnStyle}>استلام الطلب</button>
+        )}
+        {NEXT_STATUS[order.status] && onAdvance && (
+          <button onClick={() => onAdvance(order.id)} style={primaryBtnStyle}>{NEXT_LABEL[order.status]}</button>
+        )}
+        {onCancel && order.status !== "DELIVERED" && order.status !== "CANCELLED" && (
+          <button
+            onClick={() => onCancel(order.id)}
+            style={{ background: "transparent", color: "#F0455C", border: "1px solid #F0455C40", borderRadius: 6, padding: "9px 12px", fontSize: 13, cursor: "pointer" }}
+          >
+            إلغاء
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const primaryBtnStyle = {
+  flex: 1, background: "#FF7A29", color: "#12151C", border: "none", borderRadius: 6,
+  padding: "9px 12px", fontWeight: 700, fontSize: 13, cursor: "pointer",
+};
+
+function StatCard({ icon, label, value, color }) {
+  return (
+    <div style={{ background: "#1A1F29", border: "1px solid #2A3140", borderRadius: 8, padding: 16, flex: 1, minWidth: 140 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A93A6", fontSize: 13, marginBottom: 8 }}>
+        {icon} {label}
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: color || "#EDEFF3", fontFamily: "'JetBrains Mono', monospace" }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ text }) {
+  return (
+    <div style={{ padding: "36px 16px", textAlign: "center", color: "#565E6E", border: "1px dashed #2A3140", borderRadius: 8, fontSize: 13 }}>
+      {text}
+    </div>
+  );
+}
+
+function ErrorBanner({ message, onClose }) {
+  if (!message) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#F0455C1A", border: "1px solid #F0455C40", color: "#F0455C", padding: "10px 16px", fontSize: 13 }}>
+      <span style={{ fontSize: 15 }}>⚠️</span>
+      <span style={{ flex: 1 }}>{message}</span>
+      <button onClick={onClose} style={{ background: "transparent", border: "none", color: "#F0455C", cursor: "pointer", fontSize: 14 }}>✕</button>
+    </div>
+  );
+}
+
+function TopBar({ role, name, onLogout, live }) {
+  const roleLabel = { employee: "موظف", driver: "سائق", admin: "مدير" }[role];
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", background: "#171B24", borderBottom: "1px solid #2A3140" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 7, background: "#FF7A29", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <span style={{ fontSize: 17 }}>🚚</span>
+        </div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: "#EDEFF3" }}>سريع</div>
+          <div style={{ fontSize: 11, color: "#8A93A6" }}>نظام إدارة التوصيل</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: live ? "#2FBF71" : "#F0455C" }}>
+          {live ? <span style={{ fontSize: 14 }}>📶</span> : <span style={{ fontSize: 14 }}>📵</span>}
+          {live ? "متصل بالخادم" : "تعذّر الاتصال"}
+        </div>
+        <div style={{ textAlign: "start" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#EDEFF3" }}>{name}</div>
+          <div style={{ fontSize: 11, color: "#8A93A6" }}>{roleLabel}</div>
+        </div>
+        <button onClick={onLogout} title="تسجيل خروج" style={{ background: "transparent", border: "1px solid #2A3140", borderRadius: 6, padding: 7, color: "#8A93A6", cursor: "pointer", display: "flex" }}>
+          <span style={{ fontSize: 15 }}>🚪</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const inputStyle = {
+  width: "100%", padding: "10px 12px", borderRadius: 7, border: "1px solid #2A3140",
+  background: "#12151C", color: "#EDEFF3", fontSize: 14, outline: "none", boxSizing: "border-box",
+};
+const selectStyle = { ...inputStyle, cursor: "pointer" };
+
+function Login({ onLogin }) {
+  const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    if (!phone || !password) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await api("/auth/login", { method: "POST", body: { phone, password } });
+      onLogin(data.token, data.user);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ width: "100%", maxWidth: 380, background: "#1A1F29", border: "1px solid #2A3140", borderRadius: 12, padding: 28 }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
+          <div style={{ width: 46, height: 46, borderRadius: 10, background: "#FF7A29", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <span style={{ fontSize: 26 }}>🚚</span>
+          </div>
+        </div>
+        <h1 style={{ textAlign: "center", fontSize: 20, fontWeight: 800, color: "#EDEFF3", margin: "0 0 4px" }}>تسجيل الدخول</h1>
+        <p style={{ textAlign: "center", fontSize: 13, color: "#8A93A6", margin: "0 0 22px" }}>
+          رقم الهاتف وكلمة المرور — الدور يتحدد تلقائيًا من حسابك
+        </p>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, color: "#8A93A6", display: "block", marginBottom: 6 }}>رقم الهاتف</label>
+          <input value={phone} onChange={(e) => { setPhone(e.target.value); setError(""); }} placeholder="09xxxxxxxx" style={inputStyle} />
+        </div>
+        <div style={{ marginBottom: 18 }}>
+          <label style={{ fontSize: 12, color: "#8A93A6", display: "block", marginBottom: 6 }}>كلمة المرور</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => { setPassword(e.target.value); setError(""); }}
+            onKeyDown={(e) => e.key === "Enter" && submit()}
+            placeholder="••••••"
+            style={inputStyle}
+          />
+          {error && <div style={{ color: "#F0455C", fontSize: 12, marginTop: 6 }}>{error}</div>}
+        </div>
+
+        <button
+          onClick={submit}
+          disabled={loading}
+          style={{ width: "100%", padding: "11px 0", borderRadius: 8, border: "none", background: "#FF7A29", color: "#12151C", fontWeight: 800, fontSize: 14, cursor: loading ? "default" : "pointer", opacity: loading ? 0.7 : 1 }}
+        >
+          {loading ? "جارٍ الدخول..." : "دخول"}
+        </button>
+        <p style={{ fontSize: 11, color: "#565E6E", textAlign: "center", marginTop: 16, lineHeight: 1.6 }}>
+          حسابات تجريبية: مدير 0900000000 / admin123 — موظف 0911111111 / 1234 — سائق 0988222333 / 1234
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function EmployeeView({ token, error, setError }) {
+  const [orders, setOrders] = useState([]);
+  const [form, setForm] = useState({ customer_name: "", customer_phone: "", address: "", items: "", amount: "" });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api("/orders/created", { token });
+      setOrders(data);
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [token, setError]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const submit = async () => {
+    if (!form.customer_name || !form.customer_phone || !form.address || !form.amount) return;
+    try {
+      await api("/orders", { method: "POST", token, body: form });
+      setForm({ customer_name: "", customer_phone: "", address: "", items: "", amount: "" });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const cancelOrder = async (id) => {
+    try {
+      await api(`/orders/${id}/cancel`, { method: "POST", token });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", gap: 20, padding: 20, flexWrap: "wrap" }}>
+      <div style={{ flex: "1 1 340px", background: "#1A1F29", border: "1px solid #2A3140", borderRadius: 10, padding: 18, height: "fit-content" }}>
+        <h2 style={{ fontSize: 15, fontWeight: 800, color: "#EDEFF3", margin: "0 0 16px", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>➕</span> إنشاء طلب جديد
+        </h2>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <input style={inputStyle} placeholder="اسم الزبون" value={form.customer_name} onChange={(e) => set("customer_name", e.target.value)} />
+          <input style={inputStyle} placeholder="رقم الهاتف" value={form.customer_phone} onChange={(e) => set("customer_phone", e.target.value)} />
+          <input style={inputStyle} placeholder="العنوان" value={form.address} onChange={(e) => set("address", e.target.value)} />
+          <input style={inputStyle} placeholder="محتوى الطلب (اختياري)" value={form.items} onChange={(e) => set("items", e.target.value)} />
+          <input style={inputStyle} placeholder="المبلغ المطلوب تحصيله (₺)" value={form.amount} onChange={(e) => set("amount", e.target.value.replace(/[^0-9]/g, ""))} />
+          <div style={{ fontSize: 12, color: "#8A93A6", background: "#12151C", border: "1px solid #2A3140", borderRadius: 7, padding: "9px 12px", display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 14 }}>🚚</span> سيظهر الطلب في قائمة الطلبات المتاحة ليختاره أقرب سائق
+          </div>
+          <button onClick={submit} style={{ marginTop: 4, padding: "11px 0", borderRadius: 8, border: "none", background: "#FF7A29", color: "#12151C", fontWeight: 800, fontSize: 14, cursor: "pointer" }}>
+            إرسال الطلب
+          </button>
+        </div>
+      </div>
+
+      <div style={{ flex: "2 1 420px" }}>
+        <h2 style={{ fontSize: 15, fontWeight: 800, color: "#EDEFF3", margin: "0 0 12px" }}>الطلبات ({orders.length})</h2>
+        {orders.length === 0 && <EmptyState text="لا يوجد طلبات بعد. أنشئ أول طلب من النموذج." />}
+        {orders.map((o) => (
+          <OrderCard key={o.id} order={o} onCancel={cancelOrder} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DriverView({ token, myId, setError }) {
+  const [me, setMe] = useState(null);
+  const [available, setAvailable] = useState([]);
+  const [mine, setMine] = useState([]);
+
+  const load = useCallback(async () => {
+    try {
+      const [meRes, availRes, mineRes] = await Promise.all([
+        api("/drivers/me", { token }),
+        api("/orders/available", { token }),
+        api("/orders/mine", { token }),
+      ]);
+      setMe(meRes);
+      setAvailable(availRes);
+      setMine(mineRes);
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [token, setError]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const claimOrder = async (id) => {
+    try {
+      await api(`/orders/${id}/claim`, { method: "POST", token });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const advanceOrder = async (id) => {
+    try {
+      await api(`/orders/${id}/advance`, { method: "POST", token });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const toggleAvailability = async () => {
+    if (!me) return;
+    const next = me.status === "OFFLINE" ? "AVAILABLE" : "OFFLINE";
+    try {
+      await api(`/drivers/${myId}/status`, { method: "PATCH", token, body: { status: next } });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const activeMine = mine.filter((o) => o.status !== "DELIVERED" && o.status !== "CANCELLED");
+  const done = mine.filter((o) => o.status === "DELIVERED");
+
+  return (
+    <div style={{ padding: 20, maxWidth: 640, margin: "0 auto" }}>
+      <div style={{ background: "#1A1F29", border: "1px solid #2A3140", borderRadius: 10, padding: 16, marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: "#EDEFF3" }}>{me?.name}</div>
+          <div style={{ fontSize: 12, color: "#8A93A6", marginTop: 2 }}>
+            {activeMine.length} طلب نشط · {done.length} تم تسليمها
+          </div>
+        </div>
+        <button
+          onClick={toggleAvailability}
+          style={{
+            padding: "9px 16px", borderRadius: 7, fontWeight: 700, fontSize: 13, cursor: "pointer",
+            background: me?.status === "OFFLINE" ? "#2A3140" : "#2FBF711A",
+            color: me?.status === "OFFLINE" ? "#8A93A6" : "#2FBF71",
+            border: `1px solid ${me?.status === "OFFLINE" ? "#2A3140" : "#2FBF7140"}`,
+          }}
+        >
+          {me?.status === "OFFLINE" ? "غير متصل — اضغط لتفعيل" : "متصل ومتاح"}
+        </button>
+      </div>
+
+      <h2 style={{ fontSize: 15, fontWeight: 800, color: "#EDEFF3", margin: "0 0 12px", display: "flex", alignItems: "center", gap: 8 }}>
+        الطلبات المتاحة
+        {available.length > 0 && (
+          <span style={{ background: "#FF7A291A", color: "#FF7A29", border: "1px solid #FF7A2940", borderRadius: 20, fontSize: 11, padding: "1px 8px" }}>
+            {available.length}
+          </span>
+        )}
+      </h2>
+      {me?.status === "OFFLINE" ? (
+        <EmptyState text="أنت غير متصل حاليًا. فعّل حالتك أعلاه لتتمكن من استلام الطلبات." />
+      ) : available.length === 0 ? (
+        <EmptyState text="لا يوجد طلبات متاحة حاليًا." />
+      ) : (
+        available.map((o) => <OrderCard key={o.id} order={o} onClaim={claimOrder} />)
+      )}
+
+      <h2 style={{ fontSize: 15, fontWeight: 800, color: "#EDEFF3", margin: "24px 0 12px" }}>طلباتي</h2>
+      {activeMine.length === 0 && <EmptyState text="لا يوجد طلبات مسندة إليك حاليًا." />}
+      {activeMine.map((o) => <OrderCard key={o.id} order={o} onAdvance={advanceOrder} />)}
+    </div>
+  );
+}
+
+function AdminView({ token, setError }) {
+  const [orders, setOrders] = useState([]);
+  const [drivers, setDrivers] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [filter, setFilter] = useState("ALL");
+  const [tab, setTab] = useState("orders");
+  const [newDriver, setNewDriver] = useState({ name: "", phone: "", password: "" });
+  const [newEmployee, setNewEmployee] = useState({ name: "", phone: "", password: "" });
+
+  const load = useCallback(async () => {
+    try {
+      const [o, d, s, emp] = await Promise.all([
+        api("/orders", { token }),
+        api("/drivers", { token }),
+        api("/dashboard/summary", { token }),
+        api("/employees", { token }),
+      ]);
+      setOrders(o);
+      setDrivers(d);
+      setSummary(s);
+      setEmployees(emp);
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [token, setError]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const addDriver = async () => {
+    if (!newDriver.name || !newDriver.phone) return;
+    try {
+      await api("/drivers", { method: "POST", token, body: newDriver });
+      setNewDriver({ name: "", phone: "", password: "" });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const addEmployee = async () => {
+    if (!newEmployee.name || !newEmployee.phone) return;
+    try {
+      await api("/employees", { method: "POST", token, body: newEmployee });
+      setNewEmployee({ name: "", phone: "", password: "" });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const setDriverStatus = async (id, status) => {
+    try {
+      await api(`/drivers/${id}/status`, { method: "PATCH", token, body: { status } });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const filtered = filter === "ALL" ? orders : orders.filter((o) => o.status === filter);
+  const sorted = filtered.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatCard icon={<span style={{ fontSize: 15 }}>📋</span>} label="إجمالي الطلبات" value={summary?.total_orders ?? "—"} />
+        <StatCard icon={<span style={{ fontSize: 15 }}>✅</span>} label="تم التسليم" value={summary?.delivered_count ?? "—"} color="#2FBF71" />
+        <StatCard icon={<span style={{ fontSize: 15 }}>🕐</span>} label="قيد التنفيذ" value={summary?.pending_count ?? "—"} color="#FFB238" />
+        <StatCard icon={<span style={{ fontSize: 15 }}>💰</span>} label="الإيرادات المحصّلة" value={money(summary?.revenue_collected)} color="#FF7A29" />
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: "1px solid #2A3140" }}>
+        {[{ k: "orders", l: "الطلبات" }, { k: "drivers", l: "السائقون" }, { k: "employees", l: "الموظفون" }].map((t) => (
+          <button
+            key={t.k}
+            onClick={() => setTab(t.k)}
+            style={{
+              padding: "10px 16px", background: "transparent", border: "none",
+              borderBottom: tab === t.k ? "2px solid #FF7A29" : "2px solid transparent",
+              color: tab === t.k ? "#EDEFF3" : "#8A93A6", fontWeight: 700, fontSize: 13, cursor: "pointer",
+            }}
+          >
+            {t.l}
+          </button>
+        ))}
+      </div>
+
+      {tab === "orders" && (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+            {["ALL", ...Object.keys(STATUS)].map((k) => (
+              <button
+                key={k}
+                onClick={() => setFilter(k)}
+                style={{
+                  padding: "6px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                  border: `1px solid ${filter === k ? "#FF7A29" : "#2A3140"}`,
+                  background: filter === k ? "#FF7A291A" : "transparent",
+                  color: filter === k ? "#FF7A29" : "#8A93A6",
+                }}
+              >
+                {k === "ALL" ? "الكل" : STATUS[k].label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ color: "#8A93A6", textAlign: "start", borderBottom: "1px solid #2A3140" }}>
+                  {["رقم الطلب", "الزبون", "السائق", "المبلغ", "الحالة", "آخر تحديث"].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", fontWeight: 600 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((o) => {
+                  const d = drivers.find((x) => x.driver_id === o.driver_id);
+                  return (
+                    <tr key={o.id} style={{ borderBottom: "1px solid #1F252F" }}>
+                      <td style={{ padding: "10px", fontFamily: "'JetBrains Mono', monospace", color: "#8A93A6" }}>{o.order_code}</td>
+                      <td style={{ padding: "10px", color: "#EDEFF3", fontWeight: 600 }}>{o.customer_name}</td>
+                      <td style={{ padding: "10px", color: "#C4C9D4" }}>{d ? d.driver_name : "—"}</td>
+                      <td style={{ padding: "10px", fontFamily: "'JetBrains Mono', monospace", color: "#C4C9D4" }}>{money(o.amount)}</td>
+                      <td style={{ padding: "10px" }}><Badge status={o.status} /></td>
+                      <td style={{ padding: "10px", color: "#8A93A6" }}>{timeAgo(o.updated_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {sorted.length === 0 && <EmptyState text="لا يوجد طلبات مطابقة لهذا الفلتر." />}
+          </div>
+        </>
+      )}
+
+      {tab === "drivers" && (
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+          <div style={{ flex: "2 1 380px" }}>
+            {drivers.map((d) => (
+              <div key={d.driver_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#1A1F29", border: "1px solid #2A3140", borderRadius: 8, padding: 14, marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: "#EDEFF3", fontSize: 14 }}>{d.driver_name}</div>
+                  <div style={{ fontSize: 12, color: "#8A93A6", marginTop: 2 }}>{d.active_orders} نشط · {d.delivered_orders} مسلَّم</div>
+                </div>
+                <select
+                  value={d.current_status}
+                  onChange={(e) => setDriverStatus(d.driver_id, e.target.value)}
+                  style={{ ...selectStyle, width: "auto", padding: "6px 10px", fontSize: 12 }}
+                >
+                  <option value="AVAILABLE">متاح</option>
+                  <option value="BUSY">مشغول</option>
+                  <option value="OFFLINE">غير متصل</option>
+                </select>
+              </div>
+            ))}
+            {drivers.length === 0 && <EmptyState text="لا يوجد سائقون بعد." />}
+          </div>
+          <div style={{ flex: "1 1 260px", background: "#1A1F29", border: "1px solid #2A3140", borderRadius: 8, padding: 16, height: "fit-content" }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: "#EDEFF3", margin: "0 0 12px" }}>إضافة سائق</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <input style={inputStyle} placeholder="الاسم" value={newDriver.name} onChange={(e) => setNewDriver((f) => ({ ...f, name: e.target.value }))} />
+              <input style={inputStyle} placeholder="رقم الهاتف" value={newDriver.phone} onChange={(e) => setNewDriver((f) => ({ ...f, phone: e.target.value }))} />
+              <input style={inputStyle} placeholder="كلمة المرور" value={newDriver.password} onChange={(e) => setNewDriver((f) => ({ ...f, password: e.target.value }))} />
+              <button onClick={addDriver} style={{ padding: "9px 0", borderRadius: 7, border: "none", background: "#FF7A29", color: "#12151C", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                إضافة
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "employees" && (
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+          <div style={{ flex: "2 1 380px" }}>
+            {employees.map((e) => (
+              <div key={e.employee_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#1A1F29", border: "1px solid #2A3140", borderRadius: 8, padding: 14, marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: "#EDEFF3", fontSize: 14 }}>{e.employee_name}</div>
+                  <div style={{ fontSize: 12, color: "#8A93A6", marginTop: 2 }}>{e.phone} · {e.orders_created} طلب تم إنشاؤه</div>
+                </div>
+              </div>
+            ))}
+            {employees.length === 0 && <EmptyState text="لا يوجد موظفون بعد." />}
+          </div>
+          <div style={{ flex: "1 1 260px", background: "#1A1F29", border: "1px solid #2A3140", borderRadius: 8, padding: 16, height: "fit-content" }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: "#EDEFF3", margin: "0 0 12px" }}>إضافة موظف</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <input style={inputStyle} placeholder="الاسم" value={newEmployee.name} onChange={(ev) => setNewEmployee((f) => ({ ...f, name: ev.target.value }))} />
+              <input style={inputStyle} placeholder="رقم الهاتف" value={newEmployee.phone} onChange={(ev) => setNewEmployee((f) => ({ ...f, phone: ev.target.value }))} />
+              <input style={inputStyle} placeholder="كلمة المرور" value={newEmployee.password} onChange={(ev) => setNewEmployee((f) => ({ ...f, password: ev.target.value }))} />
+              <button onClick={addEmployee} style={{ padding: "9px 0", borderRadius: 7, border: "none", background: "#FF7A29", color: "#12151C", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                إضافة
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [session, setSession] = useState(null);
+  const [error, setErrorRaw] = useState("");
+  const [live, setLive] = useState(true);
+
+  const setError = useCallback((msg) => {
+    setErrorRaw(msg);
+    setLive(false);
+  }, []);
+  useEffect(() => {
+    if (!error) setLive(true);
+  }, [error]);
+
+  const onLogin = (token, user) => {
+    setSession({ token, id: user.id, name: user.name, role: user.role });
+    setErrorRaw("");
+    setLive(true);
+  };
+
+  const onLogout = () => setSession(null);
+
+  return (
+    <div dir="rtl" style={{ minHeight: "100vh", background: "#12151C", fontFamily: "'Cairo', sans-serif", color: "#EDEFF3" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');
+        * { box-sizing: border-box; }
+        input::placeholder { color: #565E6E; }
+        select option { background: #1A1F29; }
+      `}</style>
+
+      {!session ? (
+        <Login onLogin={onLogin} />
+      ) : (
+        <>
+          <TopBar role={session.role} name={session.name} onLogout={onLogout} live={live} />
+          <ErrorBanner message={error} onClose={() => setErrorRaw("")} />
+          {session.role === "employee" && <EmployeeView token={session.token} error={error} setError={setError} />}
+          {session.role === "driver" && <DriverView token={session.token} myId={session.id} setError={setError} />}
+          {session.role === "admin" && <AdminView token={session.token} setError={setError} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
