@@ -5,7 +5,7 @@ import os
 from flask import Flask, request, jsonify, g
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "/tmp/alo_urfa_v2.db"))
+DB_PATH = os.environ.get("DATABASE_PATH", "/tmp/alo_urfa_v2.db")
 
 app = Flask(__name__)
 
