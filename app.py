@@ -26,3 +26,10 @@ def init_db():
     if os.path.exists(DB_PATH):
         return
     conn = sqlite3.connect(DB_PATH)
+@app.route('/')
+def home():
+    return jsonify({"status": "online", "message": "ALO_URFA API is running"}), 200
+
+@app.route('/api/ping')
+def ping():
+    return jsonify({"status": "ok"}), 200
