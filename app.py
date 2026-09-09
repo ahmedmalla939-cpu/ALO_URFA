@@ -17,6 +17,11 @@ SCHEMA_PATH = os.path.join(BASE_DIR, "schema.sql")
 
 app = Flask(__name__)
 
+@app.route("/")
+def serve_frontend():
+    from flask import send_from_directory
+    return send_from_directory(BASE_DIR, "index.html")
+
 def hash_password(password: str, salt: str) -> str:
     return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
@@ -368,4 +373,3 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5055))
     app.run(host="0.0.0.0", port=port, debug=False)
-
